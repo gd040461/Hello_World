@@ -1,0 +1,34 @@
+Knife:
+
+knife is a command-line tool that provides an interface between a local chef-repo and the Chef server. Or we can say it relates all the components of the kichen and lead the cook for a chef engineer.
+
+Recipes:
+
+Recepies are written in ruby syntax which contains the predetermined or preinstallation softres list.
+
+Cookbooks:
+
+Cookbooks are the colletion of different kind of recipes. It stores the recipes information for serveral servers on different kind of roles.
+
+FoodCritic:
+
+Foodcritic is the test harness by which a chef engineer determines that whether the recipes and cookbooks are meeting the chef Standardization or not.
+
+
+Chef implementation Model:
+
+We have developed the chef enterprise model here as POC. That is the chef server in linux which communitates to all the clinets or nodes. This is the workstaion by which we communicate the chef server. For instance we have developed the build server and application server through chef.
+
+
+
+
+	
+* Continual focus for gaining expertise to implement continuous delivery in Cloud and Linux based hosting environments. 
+* You need to develop competency on new technology, analysis, design skills as per current CDT/DevOps process and drive them independently.
+
+	
+* You need to acquire deeper understanding of DevOps and implementing the same. 
+* In coming years we would like to see you as the technical lead of the team with additional responsibilities like backlog grooming, RCA, understand prioritization, continue to mentor and coaching other associates.
+
+
+Thanks. I highly accept the assigned responsibilities of coming years seriously. Want to groom more like a very skilled technical lead/SME in my role which will include all kind of associations connected to me. Thanks again.
