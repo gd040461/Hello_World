@@ -1,0 +1,588 @@
+import Tasks.PublishArtifacts
+import com.siemens.soarian.build.Common.Environment
+import com.siemens.soarian.build.Listeners.SnapshotListener
+import com.siemens.soarian.build.Plugins.AccuRev.AccurevPlugin
+import com.siemens.soarian.build.Plugins.LabelMaker.LabelMakerPlugin
+import com.siemens.soarian.build.Plugins.Metrics.BuildTime
+import com.siemens.soarian.build.Plugins.Hotfix.SimpleHotfix                                                                                                                                                                                                                                                                       
+import com.siemens.soarian.build.Plugins.Metrics.TaskTimer
+import com.siemens.soarian.sf.Build.Release.BuildPropertyFileManager
+import com.siemens.soarian.sf.Build.UpdateFile
+import Scripts.PasswordEncryption
+import com.cerner.soarian.build.Listeners.CollectBuildStats
+
+gradle.addBuildListener(new CollectBuildStats())
+
+buildscript {
+    repositories {        
+        sfRelease()
+        sfSnapshot()
+    }
+
+    configurations.all {
+        resolutionStrategy.cacheChangingModulesFor 0, 'seconds'
+    }
+
+dependencies { 
+        classpath "com.siemens.soarian.sf:Build_Source:BDSRC_01.04.+"   
+        classpath "com.siemens.soarian.sf:soarian-groovy-utils:SGUTL_01.02.+" 
+        classpath "commons-httpclient:commons-httpclient:3.1"
+        classpath "commons-codec:commons-codec:1.3"
+        classpath "commons-lang:commons-lang:2.3"
+        classpath 'no.nils:wsdl2java:0.5'
+        classpath 'org.codehaus.groovy:groovy-all:2.3.7'
+        classpath "org.gradle.jacobo.plugins:gradle-jaxb-plugin:1.3.4"
+        classpath 'org.jfrog.buildinfo:build-info-extractor-gradle:3.1.1'
+        classpath 'org.sonarsource.scanner.gradle:sonarqube-gradle-plugin:2.5'
+    }
+}
+
+configurations.all {
+	resolutionStrategy.cacheChangingModulesFor 0, 'seconds'
+    }
+
+artifactoryPublishPassword = new PasswordEncryption().decrypt(artifactoryPublishPassword)
+apply plugin: 'base'
+apply plugin: 'com.jfrog.artifactory'
+
+artifactory {
+    contextUrl = artifactoryContextUrl
+    publish {
+        repository {
+            repoKey = artifactoryPublishSnapshotRepoKey
+            username = artifactoryPublishUserName
+            password = artifactoryPublishPassword
+        }
+    }
+}
+
+ext.publishArtifactServerName = System.getenv("PUBLISH_ARTIFACT_SERVER_NAME") ?: artifactoryServerName
+ext.buildScriptsShareServerName = System.getenv("BUILD_SCRIPTS_SHARE_SERVER_NAME") ?: sharedResourcesServer
+
+/*
+ * Set the environment type.  Default to dev if the type is not specified.
+ * Some functionality may depend on the build environment type.
+ * Allowable values are:
+ *    dev - Developer machine/one-off build runs on a local machine
+ *    test - Test environment.  Jenkins uses this.
+ *    prod - Production quality builds, utilizes full build labels and cleanup.
+ *        Build Forge uses this setting.
+ */
+ext.env = System.properties['env'].toString().toLowerCase();
+if (!env || env.length() == 0) {
+    env = "dev"
+}
+
+// TODO: During transition from ClearCase to AccuRev we need to opt in.
+ext.useAccurevBuild = System.properties['useAccurevBuild'] ?: 'yes'
+ext.buildHistoryURL = System.properties["WEBSVC_URL"] ?: buildReportsURL
+ext.useLegacyBuildHistory = System.properties["useLegacyBuildHistory"] ?: 'true'
+ext.defaultLabel = "TNTAL_05.05.0000"
+ext.label = System.properties['label'] ?: defaultLabel
+
+ext.springJavaRuntime = System.getenv("JAVA_HOME")
+
+configurations {
+    sqlDriver.transitive = false
+}
+
+apply plugin: LabelMakerPlugin
+apply plugin: TaskTimer
+
+ext.snapshotName = snapshotName ?: "${versionPrefix}${label}-${buildId ?: System.currentTimeMillis()}"
+allprojects { snapshotVersion = "${versionPrefix}${snapshotVersion}" }
+ext.releaseVersion=label
+ext.buildLabel = System.properties['buildLabel'] ?: label
+
+/*
+* Define the publishArtifactRoot here.  Defined by command line argument
+* or defaults to \\md1dep6\BuildOutput.  This is where the task publishArtifacts
+* sends JARs, WARs, EARs, etc.
+*
+* sharedBuildOutput is the other side of this, tasks that utilize the published artifacts
+* will copy the contents of \\md1dep6c\BuildOutput (or wherever) locally, for performance.
+*/
+ext.publishArtifactsRoot = System.properties['publishArtifactsRoot']
+if (!publishArtifactsRoot) publishArtifactsRoot = "\\\\$publishArtifactServerName\\BuildOutput"
+ext.sharedBuildOutput = publishArtifactsRoot
+ext.timeStamp = new Date() . format('yyyy-MM-dd_HH-mm')
+// This if for the SoarianArtifactoryPlugin, yes, it's different than above, but above is going to be deprecated soon
+
+/*
+ * Define the ClearCase Root as it's a relative path from the main project build file
+ * this is set manually here, as it's different for all projects.
+ */
+ext.clearcaseRoot = "$rootDir.canonicalPath/.." as File
+ext.localBuildOutput = "$clearcaseRoot/SRN_SF/gradle/buildOutput" as File
+ext.description = 'This is the root'
+
+ext.javaCompileVersion = "1.8"
+
+/*
+ * Subparents are the folders in which other projects live.  These folders don't get built, but
+ * are here for naming.
+ */
+ext.subparents = ['Utility', 'Basic', 'Composite', 'Technical', 'Dependent', 'Process', 'GwtClient', 'Workflow']
+ext.nonJavaProjects = ['ArchPackage', 'AppPackage', 'TNTAL_Media', 'TND', 'TNU', 'TNF', 'HIA', 'RSEXMLCust', 'UISystem32', 'DocumentTemplates', "fitnesse-coverage", "tntal", "ctm", "adm", "err", "mfs", "mpi", "pta", "rmt", "slpa", "tntal_async", "tntal_bulk", "wkl", "Tibco","AdaptabilityTool","CoreUtilities","CoreTestUtilities","AdaptabilityEngine","AdaptabilityEngine-SF-Extensions","MessageSequencerService", "MessageSequencerHttpService", "OpenlinkAdapterService"]
+ext.nonSonarProjects = ['CaeSupportUtilityGwtClient', 'CacheService', 'MessagingTest', 'TracingAspect', 'BPOTBuilder', 'BlobUtility', 'BulkTester', 'JeeConfiguration', 'GuarantorAccountEvaluationService', 'CAEDspecBuilder', 'CAEParserTester', 'ConfigMaster', 'Alert-gwt', 'Patient-gwt', 'ResourceBundleGenerator', 'PatientBillingService',
+                        'SFServlets', 'SecurityPersistence', 'SwingLPA', 'TNTAL_Media', 'TtnCodes', 'UIBuilder', 'UICommonTools', 'UIDataPackager', 'UIConverter', 'UIGenerator', 'UIGeneratorContract', 'UIGeneratorConsole', 'UIBuilderMergeUtility',
+                        'ArchitectureContract',
+                        'sf32_critical', 'tntdbio', 'ProfileValueRetrieverFitService', 'PersonFitService', 'CSStatusInquiryResponseMCSMR', 'NewUserDataMaintTTTP-gwt', 'InsuranceCollectionProcessingService',
+                        'InterfaceMonitorToolService', 'WorklistingAPIService', 'ClaimsSpringRemoteClientService', 'BulkJvmRemoteClientService', 'ServiceMappingService']
+ext.nonStandardGwtProjects = ['rgiClient', 'CdqrTreeGwtClient', 'CaeSupportUtilityGwtClient', 'ClaimVersionGwtClient', 'DemandClaimLineRebillGwtClient',
+                              'RefundReceivablesGwtClient', 'MedicalNecessityGwtClient', 'PostRefundGwtClient', 'InboundTester']
+ext.xjcExcludes = ['RevenueManagement-inbound', 'ttn']
+
+ext.testCompileExcludes = ['TracingAspect',
+                           'MaintainPayerSpecificNPINumbers-gwt',
+                           'MaintainTaxonomyCodesUI-gwt']
+
+ext.testExcludes = ['Worklisting-SFAdapter', 'CSStatusInquiryResponse', 'UIGenerator', 'rgiServices',
+                    'SecurityAdminToolGwt', 'TestUtil', 'PaymentAssessmentHTTPService']
+
+configurations {
+    xjcAntTask
+}
+
+dependencies {
+    xjcAntTask fileTree("$rootDir/../TNT_ARCH/ThirdPartyProducts/ApacheCxf/apache-cxf-2.2.6/lib").matching { include "*.jar" }
+}
+
+allprojects {
+    buildDir = new File(projectDir, 'gradleOutput')
+}
+
+if (env == "hotfix") {
+    apply plugin: SimpleHotfix
+}
+
+//apply from: "$rootDir/dependencies.gradle"
+
+allprojects {
+    apply from: "$rootDir/dependencies.gradle"
+    apply from: "$rootDir/artifactory_repositories.gradle"
+
+    /*
+     * rjl - This is a workaround to an issue with gradle up-to-date checking on files that are removed
+     *  from source control, but the compile class file is left behind.  This will clear the compiled classes
+     *  only if the compileJava task is being re-executed.
+     */
+    tasks.withType(JavaCompile) { task ->
+    //tasks.withType(Compile) { task ->
+        doFirst {
+            delete("$task.destinationDir/com")
+        }
+        /*
+         * rjl - Explicitly turn on debugging information for compiles.  This way, if Gradle decides to change how they
+         *  default debugging information, we're covered to include debugging information in all projects.  We do this
+         *  here and not in SFJava plugin, to ensure TTN and other projects get these settings.
+         */
+        options.debug = true
+        options.debugOptions.debugLevel = "source,vars,lines"
+    }
+}
+
+apply plugin: Conversion
+apply plugin: Jenkins
+
+
+allprojects {
+    /*
+     * Our workaround for memory issues #1 - Clear the testFramework to empty out the memory usage - this is a bug in
+     * Gradle, and should be fixed in a future release.
+     * TODO: Gradle will fix this, we'll have to clean it up
+     */
+    tasks.withType(Test) { task ->
+        doLast {
+            def testClass = task.getClass().getSuperclass()
+            def field = testClass.getDeclaredField("testFramework")
+            field.accessible = true
+            field.set(task, null)
+        }
+    }
+    /*
+     * Our workaround for memory issues #2 - Fork the Java Compile to reduce the memory footprint of each java compile.
+     * Gradle is continuing to look into this issue.
+     */
+    tasks.withType(JavaCompile) { task ->
+    //tasks.withType(Compile) { task ->
+        options.fork = true
+    }
+
+    group = rootProject.group
+    version = rootProject.version 
+}
+
+configure(javaProjects()) {
+    if(!it.name.contains("HL7InterfaceAdapterWar")){
+		apply plugin: SFJava
+	}else{
+		apply plugin: 'java'
+	}
+
+    if (tasks.find { it.name.toLowerCase().contains("xjc") }) {
+        dependencies {
+          xjc "javax.xml:jaxb-impl:2.1.12"
+          xjc "javax.xml:jaxb-xjc:2.1.12"
+        }
+    }
+}
+
+configure(warProjects()) {
+	apply plugin: SpringTest
+    parseBindings {
+        webXMLFiles = files("$project.rootProject.clearcaseRoot/TNT_ARCH/SFArchWar/WebContent/WEB-INF/web.xml",
+                "$project.rootDir/Packaging/MasterPersonIndexWar/WebContent/WEB-INF/web.xml",
+                "$project.rootDir/Packaging/DayEndStatusUtilityWar/WebContent/WEB-INF/web.xml",
+                "$project.rootDir/Packaging/MasterFilesServicesWar/WebContent/WEB-INF/web.xml",
+                "$project.rootDir/Packaging/RemittanceWebServiceWar/WebContent/WEB-INF/web.xml")
+        webXML = "$project.rootProject.clearcaseRoot/TNT_ARCH/SFArchWar/WebContent/WEB-INF/web.xml" as File
+    }
+
+    //def thirdPartyLocationRoot = new File("$rootDir/../TNT_ARCH/ThirdPartyProducts").canonicalFile
+
+    dependencies { 
+        springTestCompile "org.apache.cxf:cxf-core:${cxf_coreVersion}"
+        springTestCompile "org.apache.cxf:cxf-rt-wsdl:${cxf_coreVersion}"
+        springTestCompile "wsdl4j:wsdl4j:${wsdl4jVersion}"
+        springTestCompile "org.mockito:mockito-all:${mockito_allVersion}"
+
+        //testSpringRuntime "LggLogging:LggLogging:CustomizedVersion_1.0"
+        testSpringRuntime "com.siemens.soarian.common-components:LggLogging:${LggLoggingVersion}"
+        testSpringRuntime "regs:regs:CustomizedVersion_2.0"
+        testSpringRuntime "gwt-dev-windows:gwt-dev-windows:CustomizedVersion_1.0"
+        
+
+        testSpringRuntime "org.apache.cxf:cxf-rt-wsdl:${cxf_coreVersion}"
+        testSpringRuntime "wsdl4j:wsdl4j:${wsdl4jVersion}"
+        
+    }
+
+    task publishArtifacts(type: PublishArtifacts)
+}
+
+configurations {
+	SmsDefTntAllowableValuesXml
+}
+apply plugin: 'maven-publish'
+apply plugin: 'com.jfrog.artifactory'
+publishing {
+	publications {
+		SmsDefTntAllowableValuesXml(MavenPublication) {
+			artifactId = "SmsDefTntAllowableValuesXml"
+			version "$snapshotName"
+			artifact "$rootDir/../TNT_APP/rsexml/SmsDefTntAllowableValues.xml"
+		}
+	}
+}
+
+artifactoryPublish {
+	publications 'SmsDefTntAllowableValuesXml'
+}
+
+configure(javaProjects() + warProjects()){
+    apply plugin: "maven-publish"
+    publishing {
+        publications {
+            java(MavenPublication){
+                version snapshotVersion
+                if(project in warProjects()) {
+                    tasks.findAll { it.name in ['ear', 'war'] }.each { artifact it }
+                }
+                else {
+                    from components.java
+                    tasks.findAll { it.name in ['ear', 'war', 'gwtArchive', 'contractJar', 'stubjar'] }.each { archTask ->
+                        artifact archTask, { classifier archTask.name.replaceAll(/(Archive|(J|j)ar)/,'') }
+                    }
+                }
+                pom.withXml { asNode().appendNode('description', "$snapshotName") }
+            }
+        }
+        repositories artifactoryRepositories
+    }
+
+    def snapshotTasks = ['publishJavaPublicationToSnapshotRepository', 'publishJavaPublicationToLocalSnapshotRepository']
+    task publishSnapshot(dependsOn: snapshotTasks)
+}
+
+// def releaseProjects = subprojects.findAll { it.name in ['TNTAL_Media', 'TND', 'TNF', 'TNU'] }
+def releaseProjects = subprojects.findAll { it.name in ['TND', 'TNF', 'TNU', 'HIA'] }
+configure(releaseProjects) {
+    if(!project.name.equals("HIA")){
+		ext.snapshotVersion = rootProject.snapshotName //TODO remove if moving back to -SNAPSHOT format
+	}
+    apply plugin: 'maven-publish'
+
+    configurations{
+        releaseMedia
+    }
+	dependencies {  
+		releaseMedia ("${group}:${name}:${snapshotVersion}@zip"){
+			force true
+		}
+    }
+
+	publishing{
+        publications{
+            media(MavenPublication){
+                version snapshotVersion
+                // tasks.findAll { it.name in ['archiveDatabaseDefinition', 'archiveMediaArtifacts'] }.each { artifact it }
+                tasks.findAll { it.name in ['archiveDatabaseDefinition'] }.each { artifact it }
+            }
+        //    mediaXML(MavenPublication){
+		//		println ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>   Made it here!!!!!!!  <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
+         //       version snapshotVersion
+		//		artifact "$project.rootDir/../TNT_APP/rsexml/SmsDefTntAllowableValues.xml"
+		//		artifactId "SmsDefTntAllowableValues"
+         //   }
+            releaseMedia(MavenPublication){
+				if(project.name.equals("HIA")){		// per DA team Steve, nighthawk have to take HIA package from this path.
+					version releaseVersion.replace("TNTAL", "SRNEI")
+				}else{
+					version releaseVersion
+				}
+            }
+        }
+        repositories artifactoryRepositories
+    }
+
+    task configureReleaseMedia << {
+        publishing.publications.releaseMedia { artifact configurations.releaseMedia.singleFile }
+    }
+    task publishRelease(dependsOn: ['configureReleaseMedia', 'publishReleaseMediaPublicationToReleaseRepository'])
+    task publishSnapshot(dependsOn: ['publishMediaPublicationToSnapshotRepository', 'publishMediaPublicationToLocalSnapshotRepository'])
+}
+
+
+
+
+
+task publishRelease << {
+    println "publish release ${releaseVersion} from snapshot ${snapshotVersion}"
+}
+
+task publishSnapshot << {
+    println "publish snapshot ${snapshotVersion}"
+}
+
+def javaProjects() {
+    subprojects.findAll { proj -> !subparents.contains(proj.name) && !nonJavaProjects.contains(proj.name) && !warProjects().find { warProj -> warProj.name == proj.name } }
+}
+
+def warProjects() {
+    allprojects.findAll { (it.name.toLowerCase().endsWith("ear") || it.name.toLowerCase().endsWith("war")) && !it.name.equals("HL7InterfaceAdapterWar") }
+}
+
+def rpcProjects() {
+    javaProjects().findAll { subproject -> subproject.name.endsWith('-rpc') }
+}
+
+def contractProjects() {
+    javaProjects().findAll { subproject -> subproject.name.endsWith('Contract') }
+}
+
+def serverProjects() {
+    javaProjects().findAll { subproject -> subproject.name.endsWith('-server') }
+}
+
+def projects(parent) {
+    def projects = subprojects.findAll {
+        !subparents.contains(it.name) &&
+                !nonJavaProjects.contains(it.name) &&
+                it.parent.name.equals(parent) &&
+                !it.name.equals("SFErrorLog") &&
+                !it.name.equals("ttn") &&
+                !nonSonarProjects.contains(it.name)
+    }
+    if (projects.size() == 0) {
+        projects = subprojects.findAll {
+            !subparents.contains(it.name) &&
+                    !nonJavaProjects.contains(it.name) &&
+                    !nonSonarProjects.contains(it.name) &&
+                    it.name.equals(parent)
+        }
+    }
+    return projects
+}
+
+public String getSystemProperty(String propertyName) {
+    return System.properties[propertyName] && System.properties[propertyName].length() != 0 ? System.properties[propertyName].toString() : null
+}
+
+//TODO
+task wrapper(type: Wrapper) {
+    gradleVersion = '1.0-milestone-9'
+}
+
+task cleanCacheRepo(type: Delete) {
+    delete cacheRepository
+}
+
+apply plugin: AccurevPlugin
+tagSource {
+    basisStream = project.accurevBasisStream
+    label = project.label
+    environment = "PROD"
+    outputs.upToDateWhen { false }
+    snapshotName = project.snapshotName
+}
+deprecateSnapshots {
+    snapshotId = project.snapshotName
+    basisStream = project.accurevBasisStream
+    depot = "SF"
+    environment = "PROD"
+    snapshotName = project.snapshotName
+}
+
+
+project.task('setBuildAsPromotableForAccurev') {
+    doFirst {
+        if (!project.snapshotName) {
+            throw new GradleException("Missing required Project property: 'snapshotName'. Unable to process task.")
+        }
+
+        File propertyFile = new BuildPropertyFileManager().getBuildPropertyFileLocation(project.label, "") as File
+        new BuildPropertyFileManager().updatePropertyWithSnapshotName(project.snapshotName, propertyFile)
+    }
+}
+
+gradle.projectsEvaluated {
+    ext.testProjects = subprojects.findAll { proj -> proj.tasks.withType(Test) }
+    task testReport(type: TestReport) {
+        destinationDir = file("$rootDir/JunitReports")
+        reportOn testProjects.test
+        doFirst {
+            if (new File(destinationDir.toString()).exists()) {
+                project.delete destinationDir
+            }
+        }
+    }
+
+    task zipTestReport(type: Zip, dependsOn: testReport) {
+        from testReport.destinationDir
+        baseName = "${new Date().format('yyyy-MM-dd')}-TNTAL-JUnit"
+        doLast{
+            new File('JunitReportsZipFilePath.txt').write("JUNIT_ZIP_REPORT=${archivePath.absolutePath.toString()}")
+        }
+    }
+}
+
+configurations{
+ fitnesseCoverage
+}
+
+dependencies{
+ fitnesseCoverage "com.siemens.soarian.sf.fitnesse:TNTCoverageReport:FIT-SNAPSHOT@exec"	
+}
+
+
+allprojects {
+    plugins.withType(SFJava) {
+        project.apply plugin: "jacoco"
+        sourceCompatibility = "1.8"
+    }
+	plugins.withType(JavaPlugin) {
+        project.apply plugin: "jacoco"
+        sourceCompatibility = "1.8"
+    }
+}
+
+
+
+
+
+if (enableSonarFor){
+	/***
+	*  Aggregator project (e.g. Basic, Composite, Utility, etc.) is also needed before anything inside of it can be analyzed as project.
+	*  For each project with multiple levels, we'll concatenate each level and add that as well.
+	***/
+	def toAdd = []
+	println "########ENABLE SONAR FOR : "+enableSonarFor;
+	def teamProjects = enableSonarFor.equals("allButTTN")||enableSonarFor.equals("onlyTTN")?[]:gradle."${enableSonarFor}"
+	teamProjects.each{        
+		//  split the input project/folder name, which always starts with a colon.
+		//	so, element [0] is always empty and element [1] contains the "real" first level.
+		def splitName = it.split(":")
+		def numLevels = splitName.size()
+		if(numLevels > 2){
+			// more than two levels, add each level in front of the final project name, building up the project name (e.g. for ":a:b:c:d", add ":a", ":a:b", and ":a:b:c")
+			def curLevel = 1
+			def projName = splitName[curLevel]
+			while (curLevel < numLevels-1){
+				if(!teamProjects.contains(":"+projName) && !teamProjects.contains(projName)
+				&& !toAdd.contains(":"+projName) && !toAdd.contains(projName)){
+					toAdd.add(":"+projName)
+				}
+				curLevel++
+				projName = projName + ":" + splitName[curLevel]
+			} 
+		}
+	}
+	teamProjects = toAdd+teamProjects
+	//println teamProjects
+
+
+
+    println "************************************** SonarQube Plugin will be loaded **************************************"
+	def sonarProjectName = enableSonarFor.equals("allButTTN")?"SRN_SF_NEW":enableSonarFor.equals("onlyTTN")?"ttn":enableSonarFor.capitalize()-"Team"+"_Projects"
+    apply plugin: 'org.sonarqube'
+    sonarqube {
+        properties {
+            property "sonar.host.url", "http://usmlvv2srf0061:9000/"
+            property "sonar.jdbc.driverClassName", "net.sourceforge.jtds.jdbc.Driver"
+			property "sonar.projectKey", sonarProjectName
+			property "sonar.projectName", sonarProjectName
+            property "sonar.projectBaseDir","${projectDir}"
+            property "sonar.projectVersion", project.label
+            property "sonar.exclusions", "**/SmsTntCAEParser/ParseException.java,**/SmsTntCAEParser/SmsTntCAEStringParser.java,**/SmsTntCAEParser/SmsTntCAEStringParserConstants.java,**/SmsTntCAEParser/SmsTntCAEStringParserTokenManager.java,**/SmsTntCAEParser/Token.java,**/SmsTntCAEParser/TokenMgrError.java"
+
+        }
+    }
+	
+
+    if(enableSonarFor.equals("allButTTN")) {
+        println "******** Going to analyse all projects except ttn ***************"
+        subprojects {
+            if (nonJavaProjects.contains(project.name.toString()) || nonSonarProjects.contains(project.name.toString()) || project.name.toString().equals('ttn')) {
+                println "Skipping Sonar Analysis for ${project.name.toString()}"
+                sonarqube{    
+					skipProject true
+				}
+            }
+        }
+    }
+    else if(enableSonarFor.equals("onlyTTN")) {
+        sonarqube {
+            properties {
+                property "sonar.projectKey", "ttn"
+                property "sonar.projectName", "ttn"
+				property "sonar.jacoco.itReportPath", configurations.fitnesseCoverage.singleFile
+            }
+        }
+        println "******** Going to analyse only ttn ***************"
+        subprojects {
+            if (!project.name.toString().equals('ttn')) {
+                println "Skipping Sonar Analysis for ${project.name.toString()}"
+                sonarqube{    
+					skipProject true
+				}
+            }
+        }
+    }
+	else{
+		println "******** Going to analyse ${enableSonarFor} ***************"
+        subprojects {
+            if (!teamProjects.contains(project.getPath())) {
+                //println "Skipping Sonar Analysis for ${project.getPath()}"
+                sonarqube{    
+					skipProject true
+				}
+            }
+        }
+	}
+}
+
+
+gradle.addBuildListener(new SnapshotListener())
+//Testing anchor/co
+
