@@ -31,4 +31,4 @@ We have developed the chef enterprise model here as POC. That is the chef server
 * In coming years we would like to see you as the technical lead of the team with additional responsibilities like backlog grooming, RCA, understand prioritization, continue to mentor and coaching other associates.
 
 
-Thanks. I highly accept the assigned responsibilities of coming years seriously. Want to groom more like a very skilled technical lead/SME in my role which will include all kind of associations connected to me. Thanks again.
+Thanks. I highly accept the assigned responsibilities of coming years seriously. Want to groom more like a very skilled technical lead/SME in my role which will include all kind of associations connected to me.
