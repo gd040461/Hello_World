@@ -95,7 +95,7 @@ ext.releaseVersion=label
 ext.buildLabel = System.properties['buildLabel'] ?: label
 
 /*
-* Define the publishArtifactRoot here.  Defined by command line argument
+* Define the publishArtifactRoot here.  Defined by command line argument as a reference
 * or defaults to \\md1dep6\BuildOutput.  This is where the task publishArtifacts
 * sends JARs, WARs, EARs, etc.
 *
